@@ -20,7 +20,7 @@ cp vars/controller.yaml.example vars/controller.yaml
 ansible-vault create vars/vault.yaml
 
 # 3. Deploy NetViz on Linux
-ansible-playbook -i inventory/localhost.yml deploy-netviz.yml --ask-vault-pass
+ansible-playbook -i inventory/localhosts.yml deploy-netviz.yaml --ask-vault-pass
 ```
 
 ### 🪟 Windows Deployment
