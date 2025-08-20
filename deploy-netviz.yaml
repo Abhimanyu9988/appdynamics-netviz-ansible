@@ -1,0 +1,149 @@
+- name: Deploy AppDynamics NetViz Agent
+  hosts: netviz_servers
+  become: yes
+  vars:
+    # Load configuration from vars files
+    netviz_version: "25.7.0.3267"
+    netviz_install_dir: "/opt/appdynamics/netviz"
+    oauth_url: "https://identity.msrv.saas.appdynamics.com/v2.0/oauth/token"
+    netviz_download_url: "https://download.appdynamics.com/download/prox/download-file/netviz-deb/{{ netviz_version }}/appd-netviz-x64-linux-{{ netviz_version }}.deb"
+    netviz_checksum: "sha256:35cb07adf9a78b2b8ffaf1c37711d1a3f362d13e1165eed52464f4b90152d2d3"
+
+  tasks:
+    - name: Include controller configuration
+      include_vars: "vars/controller.yaml"
+
+    - name: Include vault secrets
+      include_vars: "vars/vault.yaml"
+
+    - name: Update package cache
+      apt:
+        update_cache: yes
+
+    - name: Install required dependencies
+      apt:
+        name:
+          - curl
+          - wget
+          - net-tools
+          - iproute2
+          - tcpdump
+        state: present
+
+    - name: Create appdynamics group
+      group:
+        name: appdynamics
+        state: present
+
+    - name: Create appdynamics user
+      user:
+        name: appdynamics
+        group: appdynamics
+        system: yes
+        shell: /bin/false
+        home: /opt/appdynamics
+        create_home: yes
+        state: present
+
+    - name: Get OAuth access token
+      uri:
+        url: "{{ oauth_url }}"
+        method: POST
+        headers:
+          Content-Type: "application/json"
+        body_format: json
+        body:
+          username: "{{ vault_oauth_username }}"
+          password: "{{ vault_oauth_password }}"
+          scopes: ["download"]
+        status_code: 200
+      register: oauth_response
+      delegate_to: localhost
+      run_once: true
+      no_log: true
+
+    - name: Set access token fact
+      set_fact:
+        access_token: "{{ oauth_response.json.access_token }}"
+      no_log: true
+
+    - name: Create temporary download directory
+      tempfile:
+        state: directory
+        suffix: netviz
+      register: temp_dir
+
+    - name: Download NetViz DEB with OAuth token
+      get_url:
+        url: "{{ netviz_download_url }}"
+        dest: "{{ temp_dir.path }}/netviz-agent.deb"
+        headers:
+          Authorization: "Bearer {{ access_token }}"
+        checksum: "{{ netviz_checksum }}"
+        mode: '0644'
+        timeout: 300
+
+    - name: Install NetViz Agent DEB package
+      apt:
+        deb: "{{ temp_dir.path }}/netviz-agent.deb"
+        state: present
+
+    - name: Create NetViz configuration
+      template:
+        src: "templates/agent_config.lua.j2"
+        dest: "{{ netviz_install_dir }}/conf/agent_config.lua"
+        owner: appdynamics
+        group: appdynamics
+        mode: '0644'
+        backup: yes
+      notify: restart netviz service
+
+    - name: Set proper ownership for NetViz installation
+      file:
+        path: "{{ netviz_install_dir }}"
+        owner: appdynamics
+        group: appdynamics
+        recurse: yes
+
+    - name: Enable and start NetViz service
+      systemd:
+        name: appd-netviz
+        state: started
+        enabled: yes
+        daemon_reload: yes
+
+    - name: Wait for NetViz to start
+      wait_for:
+        port: "{{ netviz_webservice_port | default(3892) }}"
+        host: localhost
+        timeout: 60
+
+    - name: Verify NetViz status
+      command: systemctl is-active appd-netviz
+      register: service_status
+      changed_when: false
+
+    - name: Check NetViz process
+      command: "{{ netviz_install_dir }}/bin/appd-netviz.sh status"
+      register: process_status
+      changed_when: false
+      failed_when: false
+
+    - name: Display deployment results
+      debug:
+        msg: 
+          - "✓ NetViz Agent deployment completed successfully!"
+          - "✓ Service status: {{ service_status.stdout }}"
+          - "✓ Agent listening on port {{ netviz_webservice_port | default(3892) }}"
+          - "✓ Check your AppDynamics Controller for network metrics"
+
+    - name: Clean up temporary files
+      file:
+        path: "{{ temp_dir.path }}"
+        state: absent
+
+  handlers:
+    - name: restart netviz service
+      systemd:
+        name: appd-netviz
+        state: restarted

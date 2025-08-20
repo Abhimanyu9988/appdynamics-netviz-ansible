@@ -1,0 +1,6 @@
+[netviz_servers]
+localhost ansible_connection=local ansible_python_interpreter=/usr/bin/python3
+
+[netviz_servers:vars]
+ansible_become=yes
+ansible_become_method=sudo

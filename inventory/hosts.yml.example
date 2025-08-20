@@ -1,0 +1,11 @@
+# inventory/hosts.yml.example
+# Multi-host inventory template
+
+[netviz_servers]
+server1 ansible_host=10.0.1.10 ansible_user=ubuntu
+server2 ansible_host=10.0.1.11 ansible_user=ubuntu
+server3 ansible_host=10.0.1.12 ansible_user=ubuntu
+
+[netviz_servers:vars]
+ansible_become=yes
+ansible_ssh_private_key_file=~/.ssh/your-key.pem

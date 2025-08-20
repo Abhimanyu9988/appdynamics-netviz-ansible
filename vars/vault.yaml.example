@@ -1,0 +1,6 @@
+# AppDynamics OAuth Credentials
+vault_oauth_username: "your-email@domain.com"
+vault_oauth_password: "your-password"
+
+# Controller Authentication
+vault_controller_access_key: "your-controller-access-key"
