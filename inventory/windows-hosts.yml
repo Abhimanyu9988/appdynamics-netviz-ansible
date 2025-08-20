@@ -1,0 +1,16 @@
+# inventory/windows-hosts.yml
+# Windows inventory for NetViz deployment
+
+[windows_netviz_servers]
+windows-server-1 ansible_host=10.0.1.100 ansible_user=Administrator
+windows-server-2 ansible_host=10.0.1.101 ansible_user=Administrator
+
+[windows_netviz_servers:vars]
+ansible_connection=winrm
+ansible_winrm_transport=basic
+ansible_winrm_server_cert_validation=ignore
+ansible_port=5985
+
+# For HTTPS WinRM (recommended for production)
+# ansible_port=5986
+# ansible_winrm_scheme=https

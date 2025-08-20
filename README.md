@@ -3,35 +3,52 @@
 ![Ansible](https://img.shields.io/badge/ansible-%231A1918.svg?style=for-the-badge&logo=ansible&logoColor=white)
 ![AppDynamics](https://img.shields.io/badge/AppDynamics-0078D4?style=for-the-badge&logo=appdynamics&logoColor=white)
 ![Ubuntu](https://img.shields.io/badge/Ubuntu-E95420?style=for-the-badge&logo=ubuntu&logoColor=white)
+![Windows](https://img.shields.io/badge/Windows-0078D6?style=for-the-badge&logo=windows&logoColor=white)
 
-Deploy AppDynamics Network Visibility (NetViz) Agent automatically using Ansible with OAuth authentication. This solution extends the excellent AppDynamics automation ecosystem to include NetViz agents with secure, automated deployment.
+Deploy AppDynamics Network Visibility (NetViz) Agent automatically using Ansible with OAuth authentication on **Linux** and **Windows**. This solution extends the excellent AppDynamics automation ecosystem to include NetViz agents with secure, automated deployment.
 
 ## ⚡ Quick Start
 
+### 🐧 Linux Deployment
 ```bash
 # 1. Clone repository
 git clone https://github.com/Abhimanyu9988/appdynamics-netviz-ansible.git
 cd appdynamics-netviz-ansible
 
-# 2. Configure your credentials
+# 2. Configure credentials
 cp vars/controller.yaml.example vars/controller.yaml
-nano vars/controller.yaml
-
-# 3. Create encrypted vault for credentials
 ansible-vault create vars/vault.yaml
 
-# 4. Deploy NetViz
-ansible-playbook -i inventory/localhosts.yml deploy-netviz.yaml --ask-vault-pass
+# 3. Deploy NetViz on Linux
+ansible-playbook -i inventory/localhost.yml deploy-netviz.yml --ask-vault-pass
 ```
 
-Check your AppDynamics Controller → Infrastructure → Network Visibility for results.
+### 🪟 Windows Deployment
+```bash
+# 1. Setup WinRM on target Windows machines first
+# 2. Configure Windows inventory
+cp inventory/windows-hosts.yml.example inventory/windows-hosts.yml
+
+# 3. Deploy NetViz on Windows
+ansible-playbook -i inventory/windows-hosts.yml deploy-netviz-windows.yml --ask-vault-pass
+```
 
 ## 📋 Prerequisites
 
+### 🐧 Linux Requirements
 - **Ubuntu 18.04+** with sudo access
 - **Ansible 2.9+** installed
-- **AppDynamics account** with NetViz license
 - **Network connectivity** to AppDynamics SaaS
+
+### 🪟 Windows Requirements  
+- **Windows Server 2016+** or **Windows 10+**
+- **PowerShell 3.0+** installed
+- **WinRM configured** for Ansible connectivity
+- **Administrator access** on target machines
+
+### 🔑 Common Requirements
+- **AppDynamics account** with NetViz license
+- **OAuth credentials** for downloading agents
 
 ## 🔧 Configuration
 
@@ -48,7 +65,6 @@ controller_access_key: "{{ vault_controller_access_key }}"
 # NetViz Configuration
 netviz_version: "25.7.0.3267"
 netviz_webservice_port: 3892
-netviz_max_memory: "512MB"
 netviz_log_level: "info"
 ```
 
@@ -57,47 +73,81 @@ netviz_log_level: "info"
 Create with `ansible-vault create vars/vault.yaml`:
 
 ```yaml
-# AppDynamics Credentials (encrypted)
+# AppDynamics OAuth Credentials
 vault_oauth_username: "your-email@domain.com"
 vault_oauth_password: "your-password"
 vault_controller_access_key: "your-controller-access-key"
 ```
 
-### 3. Inventory Configuration
+### 3. Platform-Specific Inventory
 
-**Localhost deployment** (`inventory/localhost.yml`):
+#### 🐧 Linux Inventory (`inventory/localhost.yml`)
 ```yaml
 [netviz_servers]
 localhost ansible_connection=local ansible_become=yes
 ```
 
-**Multi-host deployment** (`inventory/hosts.yml`):
+#### 🪟 Windows Inventory (`inventory/windows-hosts.yml`)
 ```yaml
-[netviz_servers]
-server1 ansible_host=10.0.1.10 ansible_user=ubuntu
-server2 ansible_host=10.0.1.11 ansible_user=ubuntu
+[windows_netviz_servers]
+windows-server-1 ansible_host=10.0.1.100 ansible_user=Administrator
 
-[netviz_servers:vars]
-ansible_become=yes
-ansible_ssh_private_key_file=~/.ssh/your-key.pem
+[windows_netviz_servers:vars]
+ansible_connection=winrm
+ansible_winrm_transport=basic
+ansible_port=5985
 ```
 
 ## 🚀 Deployment
 
-### Localhost Deployment
+### 🐧 Linux Deployment
+
+#### Localhost
 ```bash
 ansible-playbook -i inventory/localhost.yml deploy-netviz.yml --ask-vault-pass
 ```
 
-### Multi-Host Deployment
+#### Multiple Linux Hosts
 ```bash
 ansible-playbook -i inventory/hosts.yml deploy-netviz.yml --ask-vault-pass
 ```
 
+### 🪟 Windows Deployment
+
+#### Single Windows Host
+```bash
+ansible-playbook -i inventory/windows-localhost.yml deploy-netviz-windows.yml --ask-vault-pass
+```
+
+#### Multiple Windows Hosts
+```bash
+ansible-playbook -i inventory/windows-hosts.yml deploy-netviz-windows.yml --ask-vault-pass
+```
+
+## 🔧 Windows Setup (One-time)
+
+### Configure WinRM on Windows Targets
+
+Run this PowerShell script as Administrator on each Windows target:
+
+```powershell
+# Enable WinRM
+Enable-PSRemoting -Force
+
+# Configure WinRM for Ansible
+winrm quickconfig -q
+winrm set winrm/config/winrs '@{MaxMemoryPerShellMB="1024"}'
+winrm set winrm/config '@{MaxTimeoutms="1800000"}'
+winrm set winrm/config/service '@{AllowUnencrypted="true"}'
+winrm set winrm/config/service/auth '@{Basic="true"}'
+
+# Configure firewall
+netsh advfirewall firewall add rule name="WinRM-HTTP" dir=in localport=5985 protocol=TCP action=allow
+```
+
 ## ✅ Verification
 
-The playbook automatically verifies the deployment. You can also check manually:
-
+### 🐧 Linux Verification
 ```bash
 # Service status
 sudo systemctl status appd-netviz
@@ -107,80 +157,108 @@ sudo netstat -tlnp | grep 3892
 
 # Process status
 sudo /opt/appdynamics/netviz/bin/appd-netviz.sh status
+```
 
-# Logs
-sudo tail -f /opt/appdynamics/netviz/logs/agent.log
+### 🪟 Windows Verification
+```powershell
+# Service status
+Get-Service "AppDynamics NetViz"
+
+# Network port
+Test-NetConnection -Port 3892
+
+# Process status
+Get-Process | Where-Object {$_.ProcessName -like "*netviz*"}
+
+# Or use the verification script
+.\scripts\verify-windows.ps1
 ```
 
 ## 🔧 How It Works
 
-### Authentication Flow
+### Authentication Flow (Both Platforms)
 1. **OAuth Login**: Uses your AppDynamics credentials to get access token
-2. **Secure Download**: Downloads NetViz DEB package with token authentication
+2. **Secure Download**: Downloads appropriate package (DEB for Linux, ZIP for Windows)
 3. **Checksum Verification**: Validates file integrity using SHA256
-4. **Installation**: Installs and configures NetViz agent
-5. **Service Management**: Starts and enables systemd service
+4. **Platform-Specific Installation**: 
+   - **Linux**: DEB package installation + systemd service
+   - **Windows**: ZIP extraction + Windows service registration
+5. **Service Management**: Starts and configures the appropriate service
 
-### What Gets Installed
-- **NetViz Agent**: Installed to `/opt/appdynamics/netviz`
-- **SystemD Service**: `appd-netviz` service for management
-- **Configuration**: Agent configured to connect to your controller
-- **User Management**: `appdynamics` user with proper permissions
+### Platform Differences
+
+| Feature | Linux | Windows |
+|---------|-------|---------|
+| **Package Type** | DEB (3.8 MB) | ZIP (27.4 MB) |
+| **Installation Path** | `/opt/appdynamics/netviz` | `C:\AppDynamics\NetViz` |
+| **Service Manager** | systemd | Windows Service Manager |
+| **User Account** | `appd-netviz` | Local System |
+| **Configuration** | Lua config file | Lua config file |
+| **Dependencies** | `curl`, `wget`, `tcpdump` | None required |
 
 ## 📁 Repository Structure
 
 ```
 appdynamics-netviz-ansible/
-├── deploy-netviz.yml              # Main deployment playbook
+├── deploy-netviz.yml              # Linux deployment playbook
+├── deploy-netviz-windows.yml      # Windows deployment playbook
 ├── vars/
 │   ├── controller.yaml.example    # Controller configuration template
 │   └── vault.yaml.example         # Credentials template
 ├── inventory/
-│   ├── localhost.yml              # Localhost inventory
-│   └── hosts.yml.example          # Multi-host inventory template
+│   ├── localhost.yml              # Linux localhost
+│   ├── hosts.yml.example          # Linux multi-host
+│   ├── windows-localhost.yml      # Windows localhost
+│   └── windows-hosts.yml.example  # Windows multi-host
 ├── templates/
 │   └── agent_config.lua.j2        # NetViz configuration template
+├── scripts/
+│   └── verify-windows.ps1         # Windows verification script
 └── README.md                      # This file
 ```
 
 ## 🔧 Troubleshooting
 
-### Authentication Issues
+### 🐧 Linux Issues
+
+| Issue | Solution |
+|-------|----------|
+| Permission denied | `sudo chown -R appd-netviz:appd-netviz /opt/appdynamics/netviz` |
+| Service won't start | Check port 3892: `sudo netstat -tlnp \| grep 3892` |
+| Authentication fails | Verify credentials in vault.yaml |
+
+### 🪟 Windows Issues
+
+| Issue | Solution |
+|-------|----------|
+| WinRM connection failed | Run WinRM setup script as Administrator |
+| Service won't start | Check Windows Event Logs for NetViz errors |
+| Download fails | Verify network access to download.appdynamics.com |
+
+### 🔧 Common Solutions
+
+#### Test OAuth Authentication
 ```bash
-# Test your credentials manually
 curl -X POST https://identity.msrv.saas.appdynamics.com/v2.0/oauth/token \
   -H "Content-Type: application/json" \
   -d '{"username":"your-email","password":"your-password","scopes":["download"]}'
 ```
 
-### Service Issues
+#### Check Controller Connectivity
 ```bash
-# Check service logs
-sudo journalctl -u appd-netviz -f
+# Linux
+telnet your-controller.saas.appdynamics.com 443
 
-# Check configuration
-sudo cat /opt/appdynamics/netviz/conf/agent_config.lua
-
-# Restart service
-sudo systemctl restart appd-netviz
+# Windows
+Test-NetConnection your-controller.saas.appdynamics.com -Port 443
 ```
-
-### Common Solutions
-
-| Issue | Solution |
-|-------|----------|
-| Authentication fails | Verify credentials in vault.yaml |
-| Download fails | Check network access to download.appdynamics.com |
-| Service won't start | Check port 3892 availability |
-| No metrics in controller | Verify controller connectivity and account settings |
 
 ## 🤝 Contributing
 
 1. Fork the repository
 2. Create a feature branch
-3. Make your changes
-4. Test thoroughly
-5. Submit a pull request
+3. Test on both Linux and Windows
+4. Submit a pull request
 
 ## 📄 License
 
@@ -199,3 +277,5 @@ MIT License - see [LICENSE](LICENSE) file for details.
 ---
 
 **Found this useful? ⭐ Please star this repository!**
+
+**Platform Support**: 🐧 Linux (Ubuntu/Debian) | 🪟 Windows (Server 2016+/Windows 10+)

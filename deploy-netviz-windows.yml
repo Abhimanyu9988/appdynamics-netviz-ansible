@@ -1,0 +1,249 @@
+# deploy-netviz-windows.yml
+# Complete NetViz deployment playbook for Windows hosts (ZIP method)
+
+---
+- name: Deploy AppDynamics NetViz Agent on Windows
+  hosts: windows_netviz_servers
+  gather_facts: yes
+  vars:
+    # NetViz Configuration for Windows
+    netviz_version: "25.7.0.3267"
+    netviz_install_dir: "C:\\\\AppDynamics\\\\NetViz"
+    oauth_url: "https://identity.msrv.saas.appdynamics.com/v2.0/oauth/token"
+    netviz_download_url: "https://download.appdynamics.com/download/prox/download-file/netviz-windows/{{ netviz_version }}/appd-netviz-x64-windows-{{ netviz_version }}.zip"
+    netviz_checksum: "sha256:8390eb8e52333a1c5cf0af46c7360e38cdbb75ab626f95bf78f06fab88456a3b"
+
+  tasks:
+    - name: Include controller configuration
+      include_vars: "vars/controller.yaml"
+
+    - name: Include vault secrets
+      include_vars: "vars/vault.yaml"
+
+    - name: Get OAuth access token
+      uri:
+        url: "{{ oauth_url }}"
+        method: POST
+        headers:
+          Content-Type: "application/json"
+        body_format: json
+        body:
+          username: "{{ vault_oauth_username }}"
+          password: "{{ vault_oauth_password }}"
+          scopes: ["download"]
+        status_code: 200
+      register: oauth_response
+      delegate_to: localhost
+      run_once: true
+      no_log: true
+
+    - name: Set access token fact
+      set_fact:
+        access_token: "{{ oauth_response.json.access_token }}"
+      no_log: true
+
+    - name: Create temporary download directory
+      win_tempfile:
+        state: directory
+        suffix: netviz
+      register: temp_dir
+
+    - name: Download NetViz ZIP with OAuth token
+      win_get_url:
+        url: "{{ netviz_download_url }}"
+        dest: "{{ temp_dir.path }}\\\\netviz-agent.zip"
+        headers:
+          Authorization: "Bearer {{ access_token }}"
+        timeout: 300
+        force: yes
+
+    - name: Verify downloaded file checksum
+      win_stat:
+        path: "{{ temp_dir.path }}\\\\netviz-agent.zip"
+        checksum_algorithm: sha256
+      register: download_stat
+
+    - name: Validate checksum
+      assert:
+        that:
+          - download_stat.stat.checksum == "8390eb8e52333a1c5cf0af46c7360e38cdbb75ab626f95bf78f06fab88456a3b"
+        fail_msg: "Downloaded file checksum does not match expected value"
+        success_msg: "Downloaded file checksum verified successfully"
+
+    - name: Create NetViz installation directory
+      win_file:
+        path: "{{ netviz_install_dir }}"
+        state: directory
+
+    - name: Extract NetViz ZIP archive
+      win_unzip:
+        src: "{{ temp_dir.path }}\\\\netviz-agent.zip"
+        dest: "{{ netviz_install_dir }}"
+        creates: "{{ netviz_install_dir }}\\\\install.bat"
+
+    - name: Verify installation files exist
+      win_stat:
+        path: "{{ item }}"
+      register: install_files
+      loop:
+        - "{{ netviz_install_dir }}\\\\install.bat"
+        - "{{ netviz_install_dir }}\\\\start.bat"
+        - "{{ netviz_install_dir }}\\\\stop.bat"
+        - "{{ netviz_install_dir }}\\\\bin"
+        - "{{ netviz_install_dir }}\\\\conf"
+
+    - name: Fail if required files are missing
+      fail:
+        msg: "Required installation file missing: {{ item.item }}"
+      when: not item.stat.exists
+      loop: "{{ install_files.results }}"
+
+    - name: Create NetViz configuration file
+      win_copy:
+        content: |
+          -- AppDynamics NetViz Agent Configuration (Windows)
+          agent_type = "netviz"
+          agent_name = "{{ inventory_hostname }}_netviz_agent"
+          
+          -- Controller Configuration
+          controller_host = "{{ controller_host }}"
+          controller_port = {{ controller_port }}
+          controller_ssl_enabled = {{ controller_ssl_enabled }}
+          account_name = "{{ controller_account_name }}"
+          access_key = "{{ controller_access_key }}"
+          
+          -- Network Configuration
+          webservice_port = {{ netviz_webservice_port | default(3892) }}
+          webservice_ip = "0.0.0.0"
+          
+          -- Logging Configuration
+          log_level = "{{ netviz_log_level | default('info') }}"
+          log_file_size = "10MB"
+          log_file_count = 5
+          
+          -- Windows-specific paths
+          log_dir = "{{ netviz_install_dir }}\\\\logs"
+          run_dir = "{{ netviz_install_dir }}\\\\run"
+          
+          -- Advanced Configuration
+          enable_netlib = 1
+          enable_docker_monitoring = 0
+        dest: "{{ netviz_install_dir }}\\\\conf\\\\agent_config.lua"
+
+    - name: Run NetViz installer
+      win_command: "{{ netviz_install_dir }}\\\\install.bat"
+      args:
+        chdir: "{{ netviz_install_dir }}"
+      register: install_result
+
+    - name: Display installer output
+      debug:
+        msg: "Install result: {{ install_result.stdout_lines }}"
+
+    - name: Discover NetViz services
+      win_shell: |
+        Get-Service | Where-Object {
+          $_.DisplayName -like "*NetViz*" -or 
+          $_.Name -like "*NetViz*" -or 
+          $_.DisplayName -like "*AppDynamics*" -or 
+          $_.Name -like "*AppD*"
+        } | Select-Object Name, DisplayName, Status | ConvertTo-Json
+      register: discovered_services
+
+    - name: Parse discovered services
+      set_fact:
+        netviz_services: "{{ discovered_services.stdout | from_json if discovered_services.stdout else [] }}"
+
+    - name: Display discovered services
+      debug:
+        msg: "Found services: {{ netviz_services }}"
+
+    - name: Set NetViz service name
+      set_fact:
+        actual_service_name: "{{ netviz_services[0].Name if netviz_services else 'AppDynamics NetViz' }}"
+
+    - name: Start NetViz service (if found)
+      win_service:
+        name: "{{ actual_service_name }}"
+        state: started
+        start_mode: auto
+      register: service_start_result
+      when: netviz_services | length > 0
+
+    - name: Start NetViz manually if no service found
+      win_command: "{{ netviz_install_dir }}\\\\start.bat"
+      args:
+        chdir: "{{ netviz_install_dir }}"
+      register: manual_start_result
+      when: netviz_services | length == 0
+
+    - name: Wait for NetViz to start
+      wait_for:
+        port: "{{ netviz_webservice_port | default(3892) }}"
+        host: "{{ inventory_hostname }}"
+        timeout: 60
+      register: port_check
+
+    - name: Get final service status
+      win_service:
+        name: "{{ actual_service_name }}"
+      register: final_service_status
+      when: netviz_services | length > 0
+      ignore_errors: yes
+
+    - name: Check NetViz processes
+      win_shell: |
+        Get-Process | Where-Object {
+          $_.ProcessName -like "*netviz*" -or 
+          $_.ProcessName -like "*netmon*" -or
+          $_.ProcessName -like "*appd*"
+        } | Select-Object Name, Id, CPU, WorkingSet
+      register: process_check
+
+    - name: Get NetViz status using status.bat
+      win_command: "{{ netviz_install_dir }}\\\\status.bat"
+      args:
+        chdir: "{{ netviz_install_dir }}"
+      register: status_bat_result
+      ignore_errors: yes
+
+    - name: Display deployment results
+      debug:
+        msg: 
+          - "NetViz Agent deployment completed"
+          - "Installation result: {{ 'Success' if install_result.rc == 0 else 'Failed' }}"
+          - "Service discovery: {{ netviz_services | length }} services found"
+          - "Service status: {{ final_service_status.state | default('Manual start attempted') }}"
+          - "Port {{ netviz_webservice_port | default(3892) }} status: {{ 'Listening' if port_check is not failed else 'Not listening' }}"
+          - "Active processes: {{ process_check.stdout_lines | length }}"
+          - "Status.bat output: {{ status_bat_result.stdout_lines | default(['Not available']) }}"
+
+    - name: Display detailed process information
+      debug:
+        msg: "{{ process_check.stdout_lines }}"
+      when: process_check.stdout_lines | length > 0
+
+    - name: Display troubleshooting information
+      debug:
+        msg:
+          - "Troubleshooting commands:"
+          - "Service check: Get-Service | Where-Object { $_.DisplayName -like '*NetViz*' }"
+          - "Process check: Get-Process | Where-Object { $_.ProcessName -like '*netviz*' }"
+          - "Port check: Test-NetConnection -ComputerName localhost -Port {{ netviz_webservice_port | default(3892) }}"
+          - "Manual start: {{ netviz_install_dir }}\\\\start.bat"
+          - "Manual stop: {{ netviz_install_dir }}\\\\stop.bat"
+          - "Status check: {{ netviz_install_dir }}\\\\status.bat"
+          - "Logs location: {{ netviz_install_dir }}\\\\logs"
+          - "Event logs: Get-EventLog -LogName Application -Source '*NetViz*' -Newest 10"
+
+    - name: Clean up temporary files
+      win_file:
+        path: "{{ temp_dir.path }}"
+        state: absent
+
+  handlers:
+    - name: restart netviz service
+      win_service:
+        name: "{{ actual_service_name }}"
+        state: restarted
+      when: actual_service_name is defined
