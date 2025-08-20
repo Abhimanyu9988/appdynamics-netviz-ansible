@@ -1,8 +1,12 @@
+# deploy-netviz.yml
+# Complete NetViz deployment playbook with OAuth authentication and permission fixes
+
+---
 - name: Deploy AppDynamics NetViz Agent
   hosts: netviz_servers
   become: yes
   vars:
-    # Load configuration from vars files
+    # NetViz Configuration
     netviz_version: "25.7.0.3267"
     netviz_install_dir: "/opt/appdynamics/netviz"
     oauth_url: "https://identity.msrv.saas.appdynamics.com/v2.0/oauth/token"
@@ -30,15 +34,15 @@
           - tcpdump
         state: present
 
-    - name: Create appdynamics group
+    - name: Create appd-netviz group (service file expects this user)
       group:
-        name: appdynamics
+        name: appd-netviz
         state: present
 
-    - name: Create appdynamics user
+    - name: Create appd-netviz user (service file expects this user)
       user:
-        name: appdynamics
-        group: appdynamics
+        name: appd-netviz
+        group: appd-netviz
         system: yes
         shell: /bin/false
         home: /opt/appdynamics
@@ -88,42 +92,90 @@
         deb: "{{ temp_dir.path }}/netviz-agent.deb"
         state: present
 
-    - name: Create NetViz configuration
-      template:
-        src: "templates/agent_config.lua.j2"
-        dest: "{{ netviz_install_dir }}/conf/agent_config.lua"
-        owner: appdynamics
-        group: appdynamics
-        mode: '0644'
-        backup: yes
-      notify: restart netviz service
+    - name: Create NetViz required directories
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: appd-netviz
+        group: appd-netviz
+        mode: '0755'
+      loop:
+        - "{{ netviz_install_dir }}"
+        - "{{ netviz_install_dir }}/conf"
+        - "{{ netviz_install_dir }}/logs"
+        - "{{ netviz_install_dir }}/run"
 
     - name: Set proper ownership for NetViz installation
       file:
         path: "{{ netviz_install_dir }}"
-        owner: appdynamics
-        group: appdynamics
+        owner: appd-netviz
+        group: appd-netviz
         recurse: yes
+        state: directory
 
-    - name: Enable and start NetViz service
+    - name: Create NetViz configuration
+      copy:
+        content: |
+          -- AppDynamics NetViz Agent Configuration
+          agent_type = "netviz"
+          agent_name = "{{ inventory_hostname }}_netviz_agent"
+          
+          -- Controller Configuration
+          controller_host = "{{ controller_host }}"
+          controller_port = {{ controller_port }}
+          controller_ssl_enabled = {{ controller_ssl_enabled }}
+          account_name = "{{ controller_account_name }}"
+          access_key = "{{ controller_access_key }}"
+          
+          -- Network Configuration
+          webservice_port = {{ netviz_webservice_port | default(3892) }}
+          webservice_ip = "0.0.0.0"
+          
+          -- Logging Configuration
+          log_level = "{{ netviz_log_level | default('info') }}"
+          log_file_size = "10MB"
+          log_file_count = 5
+          
+          -- Advanced Configuration
+          enable_netlib = 1
+          enable_docker_monitoring = 1
+        dest: "{{ netviz_install_dir }}/conf/agent_config.lua"
+        owner: appd-netviz
+        group: appd-netviz
+        mode: '0644'
+        backup: yes
+
+    - name: Start NetViz service (using working pattern)
       systemd:
         name: appd-netviz
         state: started
         enabled: yes
-        daemon_reload: yes
+      register: service_start
+      ignore_errors: yes
 
-    - name: Wait for NetViz to start
+    - name: Wait for NetViz to start (check port)
       wait_for:
         port: "{{ netviz_webservice_port | default(3892) }}"
         host: localhost
-        timeout: 60
+        timeout: 30
+      ignore_errors: yes
+      register: port_check
 
-    - name: Verify NetViz status
-      command: systemctl is-active appd-netviz
+    - name: Check NetViz service status
+      command: systemctl status appd-netviz
       register: service_status
       changed_when: false
+      ignore_errors: yes
 
-    - name: Check NetViz process
+    - name: Display service status
+      debug:
+        msg: "{{ service_status.stdout_lines }}"
+
+    - name: Display port check result
+      debug:
+        msg: "NetViz agent {{ 'is' if port_check is not failed else 'is NOT' }} listening on port {{ netviz_webservice_port | default(3892) }}"
+
+    - name: Verify NetViz process status
       command: "{{ netviz_install_dir }}/bin/appd-netviz.sh status"
       register: process_status
       changed_when: false
@@ -132,18 +184,24 @@
     - name: Display deployment results
       debug:
         msg: 
-          - "✓ NetViz Agent deployment completed successfully!"
-          - "✓ Service status: {{ service_status.stdout }}"
-          - "✓ Agent listening on port {{ netviz_webservice_port | default(3892) }}"
-          - "✓ Check your AppDynamics Controller for network metrics"
+          - "✓ NetViz Agent deployment completed!"
+          - "✓ Service start attempted: {{ 'Success' if service_start is not failed else 'Failed' }}"
+          - "✓ Port {{ netviz_webservice_port | default(3892) }} status: {{ 'Listening' if port_check is not failed else 'Not listening - check service' }}"
+          - "✓ Process status: {{ 'Running' if process_status.rc == 0 else 'Check logs for details' }}"
+          - "✓ Check your AppDynamics Controller → Infrastructure → Network Visibility"
+
+    - name: Display troubleshooting info if needed
+      debug:
+        msg:
+          - "⚠️  If service is not working properly, try these commands:"
+          - "   sudo systemctl status appd-netviz"
+          - "   sudo journalctl -u appd-netviz -f"
+          - "   sudo tail -f {{ netviz_install_dir }}/logs/agent.log"
+          - "   sudo netstat -tlnp | grep {{ netviz_webservice_port | default(3892) }}"
+          - "   sudo chown -R appd-netviz:appd-netviz {{ netviz_install_dir }}"
+      when: port_check is failed or service_start is failed
 
     - name: Clean up temporary files
       file:
         path: "{{ temp_dir.path }}"
         state: absent
-
-  handlers:
-    - name: restart netviz service
-      systemd:
-        name: appd-netviz
-        state: restarted

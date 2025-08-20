@@ -21,7 +21,7 @@ nano vars/controller.yaml
 ansible-vault create vars/vault.yaml
 
 # 4. Deploy NetViz
-ansible-playbook -i inventory/localhost.yml deploy-netviz.yml --ask-vault-pass
+ansible-playbook -i inventory/localhosts.yml deploy-netviz.yaml --ask-vault-pass
 ```
 
 Check your AppDynamics Controller → Infrastructure → Network Visibility for results.
